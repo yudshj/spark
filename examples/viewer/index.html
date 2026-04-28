@@ -203,10 +203,63 @@
     scene.add(spark);
 
     const controls = new SparkControls({ canvas: sparkCanvasEl });
+    let cameraPreset = null;
+    let lockCamera = false;
     // const orbitControls = new OrbitControls(camera, renderer.domElement);
     // orbitControls.target.set(0, 0, 0);
     // orbitControls.minDistance = 0.1;
     // orbitControls.maxDistance = 10;
+
+    function focalToFovDegrees(focal, pixels) {
+      return 2 * Math.atan(pixels / (2 * focal)) * 180 / Math.PI;
+    }
+
+    function applyCameraProjection(preset) {
+      camera.aspect = window.innerWidth / window.innerHeight;
+
+      if (preset.fx && preset.fy && preset.width && preset.height) {
+        const fovX = focalToFovDegrees(preset.fx, preset.width) * Math.PI / 180;
+        const fovY = focalToFovDegrees(preset.fy, preset.height) * Math.PI / 180;
+        const near = camera.near;
+        const top = Math.tan(fovY * 0.5) * near;
+        const right = Math.tan(fovX * 0.5) * near;
+
+        camera.fov = fovY * 180 / Math.PI;
+        camera.projectionMatrix.makePerspective(-right, right, top, -top, near, camera.far);
+        camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+      } else {
+        camera.fov = 45;
+        camera.updateProjectionMatrix();
+      }
+    }
+
+    function applyCameraPreset(preset) {
+      const rotation = preset.rotation;
+      const position = preset.position;
+
+      const splatToViewer = new THREE.Quaternion(1, 0, 0, 0).normalize();
+      const up = new THREE.Vector3(rotation[0][1], rotation[1][1], rotation[2][1]).applyQuaternion(splatToViewer).multiplyScalar(-1).normalize();
+      const forward = new THREE.Vector3(rotation[0][2], rotation[1][2], rotation[2][2]).applyQuaternion(splatToViewer).normalize();
+
+      camera.position.set(position[0], position[1], position[2]).applyQuaternion(splatToViewer);
+      camera.up.copy(up);
+      camera.lookAt(camera.position.clone().add(forward));
+      applyCameraProjection(preset);
+      camera.updateMatrixWorld(true);
+    }
+
+    async function loadCameraPreset(url) {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`failed to load camera preset ${url}: ${response.status}`);
+      }
+      const cameras = await response.json();
+      if (!Array.isArray(cameras) || cameras.length === 0) {
+        throw new Error(`camera preset ${url} is empty`);
+      }
+      cameraPreset = cameras[0];
+      applyCameraPreset(cameraPreset);
+    }
 
     function resize() {
       const width = window.innerWidth;
@@ -218,8 +271,12 @@
 
       if (needResize) {
         renderer.setSize(width, height, false);
-        camera.aspect = width / height;
-        camera.updateProjectionMatrix();
+        if (cameraPreset) {
+          applyCameraPreset(cameraPreset);
+        } else {
+          camera.aspect = width / height;
+          camera.updateProjectionMatrix();
+        }
       }
     }
 
@@ -230,7 +287,9 @@
     renderer.setAnimationLoop(function animate(time) {
       resize();
       // orbitControls.update();
-      controls.update(camera);
+      if (!lockCamera) {
+        controls.update(camera);
+      }
       renderer.render(scene, camera);
     });
 
@@ -289,8 +348,11 @@
 
     let params = new URLSearchParams(document.location.search);
     let splatURL = params.get("url");
+    let cameraURL = params.get("camera_url");
+    lockCamera = params.get("lock_camera") === "1";
 
     if (splatURL) { loadSplatURL(splatURL); }
+    if (cameraURL) { loadCameraPreset(cameraURL).catch(console.error); }
 
 
     function loadSplatURL(splatURL) {
